@@ -1244,7 +1244,7 @@ async function saveSecCloud(){
     db.users.push({id:nid,role:'sec',name:nome,email,palette:'compasso',photo:'',escolaId:CL.eid});
     save();const ok=await flush();
     if(!ok){toast('O acesso foi criado, mas o cadastro não salvou. Confira a internet e tente "Enviar link de senha".');render();return}
-    await FB.M.sendPasswordResetEmail(FB.auth,email);
+    await enviarMail('welcome',email,nome,db.school.name);
     closeModal();render();toast('Secretária cadastrada. Ela recebeu um e-mail para criar a senha.'+(DEMO?' Na simulação, a senha é 123456.':''));
   }catch(e){toast(authErr(e))}}
 function installCard(){
@@ -1302,6 +1302,7 @@ async function cloudBoot(){
   const app=M.initializeApp(FIREBASE_CONFIG||{});
   FB={M,app,cfg:FIREBASE_CONFIG||{},auth:M.getAuth(app),fs:M.getFirestore(app)};
   try{FB.auth.languageCode='pt-BR'}catch(e){}
+  if(SENHA_QS){CL.pwReset={...SENHA_QS};M.verifyPasswordResetCode(FB.auth,SENHA_QS.codigo).then(em=>{if(CL.pwReset){CL.pwReset.email=em;render()}}).catch(()=>{if(CL.pwReset){CL.pwReset.erro=true;render()}})}
   M.onAuthStateChanged(FB.auth,u=>{onAuth(u)});
 }
 async function onAuth(u){
@@ -1451,10 +1452,32 @@ async function cloudLogin(){
   const em=val('lgEmail').trim(),pw=val('lgPass');if(!em||!pw){toast('Digite o e-mail e a senha.');return}
   try{await FB.M.signInWithEmailAndPassword(FB.auth,em,pw)}catch(e){toast(authErr(e))}}
 async function cloudLogout(){try{await flush()}catch(e){}try{await FB.M.signOut(FB.auth)}catch(e){toast(authErr(e))}ui.stack=[{v:'home'}];ui.drawer=false}
+const SENHA_QS=(()=>{try{const p=new URLSearchParams(location.search);return p.get('acao')==='senha'&&p.get('codigo')?{codigo:p.get('codigo'),novo:p.get('novo')==='1'}:null}catch(e){return null}})();
+function senhaView(){const P=CL.pwReset||{};const topo=`<div class="bgl" style="background-image:url('${LG_MARK}')"></div><img class="lg-full" src="${LG_FULL}" alt="Compasso, gestão de escolas de arte">`;
+  if(P.erro)return`<div class="login"><div class="login-card">${topo}<h2 style="margin:0;text-align:center">Link expirado</h2><p style="margin:0;color:var(--muted);text-align:center">Este link já foi usado ou passou de 1 hora. Peça um novo na tela de entrada, em "Esqueci a senha".</p><button class="btn dark" data-act="senhaNovo">Pedir um novo link</button></div></div>`;
+  if(!P.email)return loaderView();
+  return`<div class="login"><form class="login-card" onsubmit="return false">${topo}<h2 style="margin:0;text-align:center">${P.novo?'Crie sua senha':'Crie uma nova senha'}</h2><p style="margin:0;color:var(--muted);text-align:center;overflow-wrap:anywhere">${esc(P.email)}</p>${fld('Nova senha (mínimo 6 caracteres)','pwA','','password','autocomplete="new-password"')}${fld('Repita a senha','pwB','','password','autocomplete="new-password"')}<button class="btn dark" type="submit" data-act="saveSenha">Salvar e entrar</button></form></div>`}
+async function saveSenha(){const P=CL.pwReset;if(!P||!P.email)return;const a=val('pwA'),b=val('pwB');
+  if(a.length<6){toast('A senha precisa ter pelo menos 6 caracteres.');return}
+  if(a!==b){toast('As duas senhas não são iguais.');return}
+  try{await FB.M.confirmPasswordReset(FB.auth,P.codigo,a)}catch(e){P.erro=true;render();return}
+  const em=P.email;CL.pwReset=null;try{history.replaceState(null,'',location.pathname)}catch(e){}
+  toast('Senha criada! Entrando…');
+  try{await FB.M.signInWithEmailAndPassword(FB.auth,em,a)}catch(e){CL.state='login';render()}}
+function senhaNovo(){CL.pwReset=null;try{history.replaceState(null,'',location.pathname)}catch(e){}render();forgotForm()}
 function forgotForm(){openModal('Esqueci a senha',`<p style="margin:0">Digite o seu e-mail. Enviamos um link para você criar uma senha nova.</p><div class="form">${fld('E-mail','fgEmail',val('lgEmail'),'email','inputmode="email"')}</div>`,'<button class="btn ghost" data-act="closeModal">Voltar</button><button class="btn" data-act="sendReset">Enviar link</button>')}
+const MAIL_URL='https://compasso-email.miztella.workers.dev/send';
+async function enviarMail(tipo,email,nome,escola){
+  try{
+    const h={'Content-Type':'application/json'};
+    if(tipo==='welcome'){const u=FB.auth.currentUser;if(!u||!u.getIdToken)throw 0;h.Authorization='Bearer '+await u.getIdToken()}
+    const ac=new AbortController(),tm=setTimeout(()=>ac.abort(),10000);
+    const r=await fetch(MAIL_URL,{method:'POST',headers:h,body:JSON.stringify({type:tipo,email,name:nome||'',school:escola||''}),signal:ac.signal});clearTimeout(tm);
+    const d=await r.json();if(d&&d.ok)return true}catch(e){}
+  await FB.M.sendPasswordResetEmail(FB.auth,email);return false}
 async function sendReset(email){
   email=(email||'').trim();if(!email){toast('Digite o e-mail.');return}
-  try{await FB.M.sendPasswordResetEmail(FB.auth,email);closeModal();toast('Pronto. Se o e-mail estiver cadastrado, o link chegou. Olhe também o spam.')}catch(e){toast(authErr(e))}}
+  try{await enviarMail('reset',email);closeModal();toast('Pronto. Se o e-mail estiver cadastrado, o link chegou. Olhe também o spam.')}catch(e){toast(authErr(e))}}
 async function cloudPass(){
   const a1=val('npA'),b1=val('npB');if(a1.length<6){toast('Use pelo menos 6 caracteres.');return}if(a1!==b1){toast('As duas senhas precisam ser iguais.');return}
   try{await FB.M.updatePassword(FB.auth.currentUser,a1);toast('Senha trocada');render()}catch(e){toast(authErr(e))}}
@@ -1481,11 +1504,11 @@ async function saveProfCloud(id){
     db.users.push({id:nid,role:'prof',name:nome,email,palette:'compasso',photo:'',pix:'',tipo,instr,valorHora:vh,escolaId:CL.eid});
     save();const ok=await flush();
     if(!ok){toast('O acesso foi criado, mas o cadastro não salvou. Confira a internet e tente "Enviar link de senha".');render();return}
-    await FB.M.sendPasswordResetEmail(FB.auth,email);
+    await enviarMail('welcome',email,nome,db.school.name);
     closeModal();render();toast('Professor cadastrado. Ele recebeu um e-mail para criar a senha.'+(DEMO?' Na simulação, a senha é 123456.':''));
   }catch(e){toast(authErr(e))}}
 async function sendResetFor(id){const u=uget(id)||CL.secs.find(s=>s.id===id);if(!u)return;
-  try{await FB.M.sendPasswordResetEmail(FB.auth,u.email);toast('Link enviado para '+u.email+'. Se não chegar, olhe o spam.')}catch(e){toast(authErr(e))}}
+  try{await enviarMail('welcome',u.email,u.name,(escOf(u.escolaId)||{}).name||db.school.name);toast('Link enviado para '+u.email+'. Se não chegar, olhe o spam.')}catch(e){toast(authErr(e))}}
 
 /* ---------- painel mestre (a dona) ---------- */
 
@@ -1590,7 +1613,7 @@ async function saveSchoolNew(){
     b.set(M.doc(fs,'escolas',eid),{name:esc0,logo:'',criadaEm:Date.now(),...(val('nsTipo')==='solo'?{solo:true}:{})});
     b.set(M.doc(fs,'usuarios',sid),{role:'sec',name:nome,email,escolaId:eid,palette:'compasso',photo:''});
     await b.commit();
-    await M.sendPasswordResetEmail(FB.auth,email);
+    await enviarMail('welcome',email,nome,esc0);
     closeModal();toast('Escola criada. '+nome+' recebeu um e-mail para criar a senha.'+(DEMO?' Na simulação, a senha é 123456.':''));
   }catch(e){toast(authErr(e))}}
 async function openSpaces(){
@@ -1609,6 +1632,8 @@ function cloudAct(a,t,id,ev){
   case'toMaster':flush().then(()=>{stopSchool();startMaster()});return true;
   case'sendResetFor':sendResetFor(id);return true;
   case'sendReset':sendReset(val('fgEmail'));return true;
+  case'saveSenha':saveSenha();return true;
+  case'senhaNovo':senhaNovo();return true;
   case'mnav':ui.mv=t.dataset.v;ui.drawer=false;render();return true;
   case'cobEdit':cobEditForm(id);return true;
   case'cobSave':cobSave(id);return true;
@@ -1622,6 +1647,7 @@ function cloudAct(a,t,id,ev){
   return false}
 function cloudRender(){
   const app=$('#app');
+  if(CL.pwReset){document.documentElement.removeAttribute('style');app.innerHTML=senhaView();return true}
   if(CL.blockedFlag){document.documentElement.removeAttribute('style');app.innerHTML=suspendedView();return true}
   if(CL.state==='boot'||CL.state==='load'){document.documentElement.removeAttribute('style');app.innerHTML=loaderView();return true}
   if(CL.state==='master'&&me){applyPalette();app.innerHTML=masterHtml();return true}
